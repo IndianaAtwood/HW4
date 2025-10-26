@@ -171,8 +171,12 @@ class AIPlayer(Player):
         en_power = army_power(enemyInv)
         army_ratio = my_power / (en_power + 1.0)
 
-        # 10. Number of offensive ants
-        num_offensive = getAntList(state, enemyInv.player, (SOLDIER, DRONE, R_SOLDIER))
+        # 10. Queen safety
+        queen_safety = 0
+        if myQ:
+            adj = listAdjacent(myQ.coords)
+            allies = sum(1 for c in adj if getAntAt(state, c) and getAntAt(state, c).player == myInv.player)
+            queen_safety = allies / 6.0
 
         # 11. Worker progress (combined)
         food = getConstrList(state, None, (FOOD,))[0]
@@ -207,7 +211,7 @@ class AIPlayer(Player):
         return [
             food_diff, queen_health_diff, worker_diff, drone_diff,
             soldier_diff, ranged_diff, offense_prox, defense_threat,
-            army_ratio, num_offensive, queen_distance, worker_to_queen,
+            army_ratio, queen_safety, queen_distance, worker_to_queen,
             worker_progress  # merged feature
         ]
 
