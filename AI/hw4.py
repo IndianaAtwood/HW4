@@ -17,7 +17,7 @@ class AIPlayer(Player):
         super(AIPlayer, self).__init__(playerId, "GA_MiniMax_Tabra")
 
         # genetic algo params
-        self.pop_size = 13
+        self.pop_size = 12
         self.games_per_gene = 4
         self.population = []
         self.fitnesses = []
@@ -25,7 +25,7 @@ class AIPlayer(Player):
         self.current_gene_index = 0
         self.generation = 0
         self.mutation_rate = 0.1
-        self.mutation_magnitude = 1.0
+        self.mutation_magnitude = 2.0
         self.depth = 2  # shallow minimax for speed
         self.whichPlayer = None
 
@@ -62,7 +62,7 @@ class AIPlayer(Player):
 
     def init_random_population(self):
         #create random pop of genomes
-        num_features = 13
+        num_features = 12
         self.population = [
             [random.uniform(-10.0, 10.0) for _ in range(num_features)]
             for _ in range(self.pop_size)
@@ -130,106 +130,100 @@ class AIPlayer(Player):
         myInv = getCurrPlayerInventory(state)
         enemyInv = getEnemyInv(self, state)
 
-        # 1. Food difference
+        myQ, enQ = myInv.getQueen(), enemyInv.getQueen()
+        # safe tunnel access
+        tunnels = myInv.getTunnels()
+        myT = tunnels[0] if tunnels else None
+
+        # find food (neutral)
+        foodList = getConstrList(state, None, (FOOD,))
+        food = foodList[0] if foodList else None
+
+        # 1. Food difference (important)
         food_diff = (myInv.foodCount - enemyInv.foodCount) / 11.0
 
-        # 2. Queen HP difference
-        myQ, enQ = myInv.getQueen(), enemyInv.getQueen()
-        queen_health_diff = 0
-        if myQ and enQ:
-            queen_health_diff = (myQ.health - enQ.health) / 10.0
+        # workers list
+        workers = getAntList(state, myInv.player, (WORKER,))
 
-        # 3–6. Count differences
-        worker_diff = len(getAntList(state, myInv.player, (WORKER,))) - len(getAntList(state, enemyInv.player, (WORKER,)))
+        # 2. Worker progress (not carrying -> move toward food) (important)
+        worker_to_food = 0.0
+        if workers and food:
+            vals = []
+            for w in workers:
+                if not getattr(w, "carrying", False):
+                    d = approxDist(w.coords, food.coords)
+                    vals.append(max(0.0, 1.0 - d / 10.0))
+            if vals:
+                worker_to_food = sum(vals) / len(vals)
+
+        # 3. Worker progress (carrying -> move toward tunnel/anthill) (important)
+        worker_to_tunnel = 0.0
+        if workers and myT:
+            vals = []
+            for w in workers:
+                if getattr(w, "carrying", False):
+                    d = approxDist(w.coords, myT.coords)
+                    vals.append(max(0.0, 1.0 - d / 10.0))
+            if vals:
+                worker_to_tunnel = sum(vals) / len(vals)
+
+        # 4. Worker count normalized (important) — ideal <= 2, normalized so ~1 = 2 workers
+        worker_count = min(len(workers), 4) / 2.0
+
+        # 5. Soldier count normalized (important) — encourage at least one
+        soldiers = getAntList(state, myInv.player, (SOLDIER,))
+        soldier_count = min(len(soldiers), 4) / 2.0
+
+        # 6-7. Simple count diffs (important)
         drone_diff = len(getAntList(state, myInv.player, (DRONE,))) - len(getAntList(state, enemyInv.player, (DRONE,)))
         soldier_diff = len(getAntList(state, myInv.player, (SOLDIER,))) - len(getAntList(state, enemyInv.player, (SOLDIER,)))
-        ranged_diff = len(getAntList(state, myInv.player, (R_SOLDIER,))) - len(getAntList(state, enemyInv.player, (R_SOLDIER,)))
 
-        # 7. Offensive proximity
-        my_off = getAntList(state, myInv.player, (SOLDIER, DRONE, R_SOLDIER))
-        enQ, enH = enemyInv.getQueen(), enemyInv.getAnthill()
-        offense_prox = 0
-        if my_off and enQ and enH:
-            prox = [10 - min(approxDist(a.coords, enQ.coords), approxDist(a.coords, enH.coords)) for a in my_off]
-            offense_prox = sum(prox) / (10 * len(prox))
+        # 8. Soldier proximity to enemy queen (important)
+        soldier_proximity = 0.0
+        if soldiers and enQ:
+            dists = [approxDist(s.coords, enQ.coords) for s in soldiers]
+            soldier_proximity = max(0.0, 1.0 - (sum(dists) / (10.0 * len(dists))))
 
-        # 8. Defense threat
+        # 9. Enemy threat near my queen (important)
         enemy_off = getAntList(state, enemyInv.player, (SOLDIER, DRONE, R_SOLDIER))
-        myQ, myH = myInv.getQueen(), myInv.getAnthill()
-        defense_threat = 0
-        if enemy_off and myQ and myH:
-            prox = [10 - min(approxDist(a.coords, myQ.coords), approxDist(a.coords, myH.coords)) for a in enemy_off]
-            defense_threat = sum(prox) / (10 * len(prox))
+        enemy_threat = 0.0
+        if myQ and enemy_off:
+            dists = [approxDist(a.coords, myQ.coords) for a in enemy_off]
+            nearby = [d for d in dists if d <= 2]
+            enemy_threat = len(nearby) / (len(enemy_off) + 1.0)
 
-        # 9. Army strength ratio
-        def army_power(inv):
-            army = getAntList(state, inv.player, (SOLDIER, DRONE, R_SOLDIER))
-            hp = sum(a.health for a in army)
-            atk = sum(UNIT_STATS[a.type][ATTACK] for a in army)
-            return hp + atk
-        my_power = army_power(myInv)
-        en_power = army_power(enemyInv)
-        army_ratio = my_power / (en_power + 1.0)
+        # 10. Army ratio (important)
+        def power(inv):
+            ants = getAntList(state, inv.player, (SOLDIER, DRONE, R_SOLDIER))
+            atk = sum(UNIT_STATS[a.type][ATTACK] for a in ants)
+            hp = sum(a.health for a in ants)
+            return atk + hp
+        army_ratio = power(myInv) / (power(enemyInv) + 1.0)
 
-        # 10. Queen safety
-        queen_safety = 0
-        if myQ:
-            adj = listAdjacent(myQ.coords)
-            allies = sum(1 for c in adj if getAntAt(state, c) and getAntAt(state, c).player == myInv.player)
-            queen_safety = allies / 6.0
-
-        # 11. Worker progress (combined)
-        food = getConstrList(state, None, (FOOD,))[0]
-        workers = getAntList(state, myInv.player, (WORKER,))
-        hill = myInv.getAnthill()
-        worker_progress = 0
-
-        if workers and food and hill:
-            scores = []
-            for w in workers:
-                if w.carrying:
-                    # Closer to hill → better
-                    d = approxDist(w.coords, hill.coords)
-                    scores.append(1 - d / 10.0)
-                else:
-                    # Closer to food → better
-                    d = approxDist(w.coords, food.coords)
-                    scores.append(1 - d / 10.0)
-            worker_progress = sum(scores) / len(scores)
-
-        # 12. Queen distance
-        queen_distance = 0
+        # 11. Irrelevant filler: queen_distance (irrelevant)
+        queen_distance = 0.0
         if myQ and enQ:
             queen_distance = approxDist(myQ.coords, enQ.coords) / 14.0
 
-        # 13. Avg worker→queen distance
-        worker_to_queen = 0
-        if myQ and workers:
-            dists = [approxDist(a.coords, myQ.coords) for a in workers]
-            worker_to_queen = sum(dists) / (10 * len(dists))
+        # 12. Irrelevant filler: avg worker->queen distance (also irrelevant)
+        worker_to_queen = 0.0
+        if workers and myQ:
+            dists = [approxDist(w.coords, myQ.coords) for w in workers]
+            worker_to_queen = (sum(dists) / (10.0 * len(dists)))
 
         return [
-            food_diff, queen_health_diff, worker_diff, drone_diff,
-            soldier_diff, ranged_diff, offense_prox, defense_threat,
-            army_ratio, queen_safety, queen_distance, worker_to_queen,
-            worker_progress  # merged feature
+            food_diff, worker_to_food, worker_to_tunnel, worker_count, soldier_count,
+            drone_diff, soldier_diff, soldier_proximity, enemy_threat, army_ratio,
+            queen_distance, worker_to_queen
         ]
 
 
     def utility(self, state):
-        gene = self.population[self.current_gene_index]
+        gene = [float(w) for w in self.population[self.current_gene_index]]
         feats = self.extract_features(state)
+        score = sum(w * f for w, f in zip(gene, feats))
 
-        base_score = sum(w * f for w, f in zip(gene, feats))
-
-        # --- Add worker cap penalty ---
-        myInv = getCurrPlayerInventory(state)
-        worker_count = len(getAntList(state, myInv.player, (WORKER,)))
-        if worker_count > 2:
-            base_score -= (worker_count - 2) * 10.0  # penalty for extras
-
-        return base_score
-
+        return score
     
     def getPlacement(self, currentState):
         numToPlace = 0
