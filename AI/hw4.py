@@ -8,15 +8,13 @@ from AIPlayerUtils import *
 from Move import Move
 from Ant import UNIT_STATS
 
-POP_FILE = "C:/Users/india/Desktop/AI/HW4/indiana_population.txt"  # required relative path
-
+POP_FILE = "./tabra26_atwoodi26_population.txt"  # required relative path
 
 class AIPlayer(Player):
-
     def __init__(self, playerId):
-        super(AIPlayer, self).__init__(playerId, "GA_MiniMax_Tabra")
+        super(AIPlayer, self).__init__(playerId, "GA_MiniMax_Tabra_Atwood")
 
-        # genetic algo params
+        # Genetic algorithm parameters
         self.pop_size = 12
         self.games_per_gene = 4
         self.population = []
@@ -25,10 +23,11 @@ class AIPlayer(Player):
         self.current_gene_index = 0
         self.generation = 0
         self.mutation_rate = 0.1
-        self.mutation_magnitude = 2.0
+        self.mutation_magnitude = 1.0
         self.depth = 2  # shallow minimax for speed
         self.whichPlayer = None
 
+        # Generate population from file (if exists)
         self.load_or_init_population()
 
     # -------------------------------------------------------------
@@ -38,7 +37,6 @@ class AIPlayer(Player):
 
         #load an existing population or make one
         if os.path.exists(POP_FILE):
-
             try:
                 with open(POP_FILE, "r") as f:
                     data = json.load(f)
@@ -47,22 +45,24 @@ class AIPlayer(Player):
 
                 print(f"generation loaded: {self.generation}")
 
+            # If error, create a new population with random weights
             except Exception as e:
-
                 print("pop not loaded: ", e)
                 self.init_random_population()
         else:
-            #initiate random pop
+            # Initiate random population
             self.init_random_population()
 
-        #initial vals set
+        # Initial vals set
         self.fitnesses = [0.0 for _ in self.population]
         self.eval_counts = [0 for _ in self.population]
         self.current_gene_index = 0
 
+    # Generate random weights for initial run
     def init_random_population(self):
+
         #create random pop of genomes
-        num_features = 13
+        num_features = 12
         self.population = [
             [random.uniform(-10.0, 10.0) for _ in range(num_features)]
             for _ in range(self.pop_size)
@@ -70,23 +70,26 @@ class AIPlayer(Player):
         self.generation = 0
         print("new random pop made")
 
+    # When generation is done, it is saved to the file
     def save_population(self):
         #write to popfile
-        with open(POP_FILE, "w") as f:
+        with open(POP_FILE, "w") as file:
             json.dump(
-                {"generation": self.generation, "population": self.population}, f
+                {"generation": self.generation, "population": self.population}, file
             )
 
+    # Crosses the genes for variation
     def crossover(self, p1, p2):
-        #perform uniform crossover
-
+        
+        # Perform uniform crossover
         c1 = [(a if random.random() < 0.5 else b) for a, b in zip(p1, p2)]
         c2 = [(b if random.random() < 0.5 else a) for a, b in zip(p1, p2)]
         return c1, c2
 
+    # Mutation of the genes for GA (using mutuation rate)
     def mutate(self, gene):
-        #small random perturbations happen
 
+        # Small random perturbations happen
         for i in range(len(gene)):
             if random.random() < self.mutation_rate:
                 gene[i] += random.uniform(-self.mutation_magnitude, self.mutation_magnitude)
@@ -94,17 +97,18 @@ class AIPlayer(Player):
 
         return gene
 
+    # Ranks most effective genes, mutates new offspring
+    #   and begins a new generation
     def next_generation(self):
-        #breed for top performers next gen:
 
-        #rank by fitness
+        # Rank by fitness
         ranked = list(zip(self.population, self.fitnesses))
         ranked.sort(key=lambda x: x[1], reverse=True)
 
-        #parents selected
+        # Parents selected
         top_half = [g for g, _ in ranked[: len(ranked)//2]]
 
-        #breed new offspring in while
+        # Breed new offspring in while
         new_pop = []
 
         while len(new_pop) < self.pop_size:
@@ -114,19 +118,21 @@ class AIPlayer(Player):
             self.mutate(c2)
             new_pop.extend([c1, c2])
 
-        #reset, advance generation counter
+        # Reset, advance generation counter
         self.population = new_pop[:self.pop_size]
         self.fitnesses = [0.0 for _ in self.population]
         self.eval_counts = [0 for _ in self.population]
         self.current_gene_index = 0
         self.generation += 1
 
-        #save generation
+        # Save generation
         self.save_population()
         print(f"[GA] === New Generation {self.generation} created ===")
-    
+
+    # Important game features for feeding into the GA
     def extract_features(self, state):
-        #all features extracted below
+
+        # All features extracted below
         myInv = getCurrPlayerInventory(state)
         enemyInv = getEnemyInv(self, state)
 
@@ -145,20 +151,20 @@ class AIPlayer(Player):
         soldier_diff = len(getAntList(state, myInv.player, (SOLDIER,))) - len(getAntList(state, enemyInv.player, (SOLDIER,)))
         ranged_diff = len(getAntList(state, myInv.player, (R_SOLDIER,))) - len(getAntList(state, enemyInv.player, (R_SOLDIER,)))
 
-        # 7. Offensive proximity (close to enemy queen)
+        # 7. Offensive proximity (close to enemy queen/hill)
         my_off = getAntList(state, myInv.player, (SOLDIER, DRONE, R_SOLDIER))
         enQ, enH = enemyInv.getQueen(), enemyInv.getAnthill()
         offense_prox = 0
         if my_off and enQ and enH:
-            prox = [10 - approxDist(a.coords, enQ.coords) for a in my_off]
+            prox = [10 - min(approxDist(a.coords, enQ.coords), approxDist(a.coords, enH.coords)) for a in my_off]
             offense_prox = sum(prox) / (10 * len(prox))
 
-        # 8. Defense threat (enemy attackers near my queen)
+        # 8. Defense threat (enemy attackers near my queen/hill)
         enemy_off = getAntList(state, enemyInv.player, (SOLDIER, DRONE, R_SOLDIER))
         myQ, myH = myInv.getQueen(), myInv.getAnthill()
         defense_threat = 0
         if enemy_off and myQ and myH:
-            prox = [10 - approxDist(a.coords, myQ.coords) for a in enemy_off]
+            prox = [10 - min(approxDist(a.coords, myQ.coords), approxDist(a.coords, myH.coords)) for a in enemy_off]
             defense_threat = sum(prox) / (10 * len(prox))
 
         # 9. Army strength ratio
@@ -171,43 +177,12 @@ class AIPlayer(Player):
         en_power = army_power(enemyInv)
         army_ratio = my_power / (en_power + 1.0)
 
-        # safe tunnel access
-        tunnels = myInv.getTunnels()
-        myT = tunnels[0] if tunnels else None
-
-        # find food (neutral)
-        foodList = getConstrList(state, None, (FOOD,))
-        food = foodList[0] if foodList else None
-
-        # 2. Worker progress (not carrying -> move toward food) (important)
-        workers = getAntList(state, myInv.player, (WORKER,))
-        worker_to_food = 0.0
-        if workers and food:
-            vals = []
-            for w in workers:
-                d = approxDist(w.coords, food.coords)
-                if w.carrying:
-                    if d == 0:  # directly on food
-                        vals.append(2.0)
-                    else:
-                        vals.append(1 - (d / 10.0))
-            if vals:
-                worker_to_tunnel = sum(vals) / len(vals)
-            
-
-        # 3. Worker progress (carrying -> move toward tunnel/anthill) (important)
-        worker_to_tunnel = 0.0
-        if workers and myT:
-            vals = []
-            for w in workers:
-                d = approxDist(w.coords, myT.coords)
-                if w.carrying:
-                    if d == 0:  # directly on tunnel
-                        vals.append(2.0)
-                    else:
-                        vals.append(1 - (d / 10.0))
-            if vals:
-                worker_to_tunnel = sum(vals) / len(vals)
+        # 10. Queen safety (friendly nearby)
+        queen_safety = 0
+        if myQ:
+            adj = listAdjacent(myQ.coords)
+            allies = sum(1 for c in adj if getAntAt(state, c) and getAntAt(state, c).player == myInv.player)
+            queen_safety = allies / 6.0
 
         # 11. Irrelevant: queen distance
         queen_distance = 0
@@ -215,47 +190,25 @@ class AIPlayer(Player):
             queen_distance = approxDist(myQ.coords, enQ.coords) / 14.0
 
         # 12. Irrelevant: avg worker→queen distance
-        workers = getAntList(state, enemyInv.player, (WORKER,))
+        workers = getAntList(state, myInv.player, (WORKER,))
         worker_to_queen = 0
-        if enQ and workers:
-            dists = [approxDist(a.coords, enQ.coords) for a in workers]
+        if myQ and workers:
+            dists = [approxDist(a.coords, myQ.coords) for a in workers]
             worker_to_queen = sum(dists) / (10 * len(dists))
 
         return [
             food_diff, queen_health_diff, worker_diff, drone_diff,
             soldier_diff, ranged_diff, offense_prox, defense_threat,
-            army_ratio, worker_to_food, worker_to_tunnel, queen_distance, worker_to_queen
+            army_ratio, queen_safety, queen_distance, worker_to_queen
         ]
 
-
+    # Determines the most effective state (using extract_features function)
     def utility(self, state):
-        # ensure numeric weights
-        gene = [float(w) for w in self.population[self.current_gene_index]]
+        #new utility made by weighted linear combination
+        gene = self.population[self.current_gene_index]
         feats = self.extract_features(state)
+        return sum(w * f for w, f in zip(gene, feats))
 
-        # safe zip: both should be length 12
-        score = sum(w * f for w, f in zip(gene, feats))
-
-        myInv = getCurrPlayerInventory(state)
-        workers = getAntList(state, myInv.player, (WORKER,))
-        soldiers = getAntList(state, myInv.player, (SOLDIER,))
-
-        # Stronger explicit nudges (on top of learned weights)
-        # discourage >2 workers (hard penalty)
-        if len(workers) > 2:
-            score -= (len(workers) - 2) * 8.0
-
-        # encourage having at least one worker (avoid zero)
-        if len(workers) == 0:
-            score -= 8.0
-
-        # encourage at least one soldier — make this stronger so GA doesn't ignore offense
-        if len(soldiers) == 0:
-            score -= 12.0
-
-        return score
-
-    
     def getPlacement(self, currentState):
         numToPlace = 0
         #implemented by students to return their next move
@@ -323,6 +276,7 @@ class AIPlayer(Player):
             result.append((m, ns))
         return result
 
+    # MiniMax function for finding successful states
     def minimax(self, state, depth, alpha, beta, maximizing):
         #recursive minimax using new utility
         if depth == 0 or getWinner(state) is not None:
@@ -348,7 +302,10 @@ class AIPlayer(Player):
     def getAttack(self, state, attackingAnt, enemyLocs):
         return random.choice(enemyLocs)
 
+    # Update generation's eval, and gene index,
+    #   generation and fitness (if won)
     def registerWin(self, hasWon):
+
         #update stats when game ends
         i = self.current_gene_index
         self.eval_counts[i] += 1
@@ -359,6 +316,6 @@ class AIPlayer(Player):
         if self.eval_counts[i] >= self.games_per_gene:
             self.current_gene_index += 1
 
-        # All genes evaluated → evolve
+        # All genes evaluated, then evolve
         if self.current_gene_index >= len(self.population):
             self.next_generation()
